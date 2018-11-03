@@ -1,0 +1,145 @@
+Cassandra Cluster installation on OpenStack with Salt
+=====================================================
+
+1. Create the cassandra stack [OpenStack]
+=========================================
+
+# heat stack-create cassandra-test -f /etc/heat/templates/cassandra-test.yaml
+
+1.1. Check the stack status [OpenStack]
+---------------------------------------
+
+# heat stack-list | grep cassandra-test
++--------------------------------------+----------------+-----------------+----------------------+
+| id                                   | stack_name     | stack_status    | creation_time        |
++--------------------------------------+----------------+-----------------+----------------------+
+| 1b5a72d8-0450-4cd4-8418-4a4ef302bf81 | cassandra-test | CREATE_COMPLETE | 2016-04-12T18:30:29Z |
++--------------------------------------+----------------+-----------------+----------------------+
+
+1.2. Verify the created instances [OpenStack]
+---------------------------------------------
+
+# nova list | grep ccdc1
++--------------------------------------+--------------------+--------+------------+-------------+----------------------------------------------+
+| ID                                   | Name               | Status | Task State | Power State | Networks                                     |
++--------------------------------------+--------------------+--------+------------+-------------+----------------------------------------------+
+| 88c00e23-52b1-4486-afef-64200c5c7d24 | sz-ccdc1r-0        | ACTIVE | -          | Running     | ns-poc-network=192.168.99.30, 10.9.60.198    |
+| ddaca972-1eda-4ed9-84a4-2179bf5b8ad5 | sz-ccdc1r-1        | ACTIVE | -          | Running     | ns-poc-network=192.168.99.28, 10.9.60.196    |
+| 3e32fdea-7dce-4cd0-a307-5ff493359694 | sz-ccdc1r-2        | ACTIVE | -          | Running     | ns-poc-network=192.168.99.32, 10.9.60.201    |
+| cf472fb4-1352-4e38-a98f-cac43702a5f1 | sz-ccdc1s-0        | ACTIVE | -          | Running     | ns-poc-network=192.168.99.29, 10.9.60.197    |
+| b0e531a5-32af-45e0-a9fb-7de7db730611 | sz-ccdc1s-1        | ACTIVE | -          | Running     | ns-poc-network=192.168.99.31, 10.9.60.199    |
+| ef0a4b27-c83c-4563-b3b4-8f2d80f31ad1 | sz-ccdc1s-2        | ACTIVE | -          | Running     | ns-poc-network=192.168.99.33, 10.9.60.202    |
++--------------------------------------+--------------------+--------+------------+-------------+----------------------------------------------+
+
+1.3. Check the accepted keys [Salt-Master, after 5-7 min]
+---------------------------------------------------------
+
+# salt-key -L | grep ccdc1
+ccdc1r-0
+ccdc1r-1
+ccdc1r-2
+ccdc1s-0
+ccdc1s-1
+ccdc1s-2
+
+2. Configure the cassandra nodes [Salt-Master]
+==============================================
+
+# salt 'ccdc1*' state.sls cassandra_set_all saltenv=ns
+
+2.1. Verify the cassandra configuration [Salt-Master]
+----------------------------------------------------- 
+
+# salt 'ccdc1*' state.sls cassandra_get_settings saltenv=ns | grep seeds
+
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+                       "seeds": ["192.168.99.29", "192.168.99.31", "192.168.99.33"],
+Should be 2 * (number of nodes) = 2 * 6 = 12 records.
+
+3. Start the seed nodes [Salt-Master]
+=====================================
+
+# salt-run state.orchestrate orch.cassandra_start_seed_nodes saltenv=ns
+
+3.1. Verify the cassandra process on seed nodes [Salt-Master]
+-------------------------------------------------------------
+
+# salt 'ccdc1s*' state.sls cassandra_status saltenv=ns | grep result
+
+                     <result>cassandra (pid  130865) is running...</result>
+                     <result>cassandra (pid  130865) is running...</result>
+                     <result>cassandra (pid  130902) is running...</result>
+                     <result>cassandra (pid  130902) is running...</result>
+                     <result>cassandra (pid  130931) is running...</result>
+                     <result>cassandra (pid  130931) is running...</result>
+
+4. Start the regular nodes [Salt-Master]
+========================================
+
+# salt-run state.orchestrate orch.cassandra_start_regular_nodes saltenv=ns
+
+4.1. Verify the cassandra processes on regular nodes [Salt-Master]
+------------------------------------------------------------------
+
+# salt 'ccdc1r*' state.sls cassandra_status saltenv=ns | grep result
+
+                        <result>cassandra (pid  7194) is running...</result>
+                        <result>cassandra (pid  7194) is running...</result>
+                        <result>cassandra (pid  575) is running...</result>
+                        <result>cassandra (pid  575) is running...</result>
+                        <result>cassandra (pid  564) is running...</result>
+                        <result>cassandra (pid  564) is running...</result>
+
+4.2. Verify the cluster status [Salt-Master]
+--------------------------------------------
+
+# salt 'ccdc1s-0' cmd.run "runuser -l -s /bin/bash cassandra -c 'nodetool status'"
+
+ccdc1s-0:
+    Datacenter: dc1
+    ===============
+    Status=Up/Down
+    |/ State=Normal/Leaving/Joining/Moving
+    --  Address        Load       Tokens  Owns    Host ID                               Rack
+    UN  192.168.99.28  162.2 KB   256     ?       23f33ed3-73e8-4af6-aaeb-5697992fc9e6  rack1
+    UN  192.168.99.29  186.86 KB  256     ?       6903d709-9fa1-4939-8fb3-099a58a7925a  rack1
+    UN  192.168.99.30  212.44 KB  256     ?       395375e5-cb2a-4d12-b72d-e5cbc0a11ca6  rack1
+    UN  192.168.99.31  205.51 KB  256     ?       a7ce2392-66ef-4df3-9702-59c577c716b2  rack1
+    UN  192.168.99.32  194.38 KB  256     ?       8f6a7552-e75f-4cf3-8162-5212a7dfb540  rack1
+    UN  192.168.99.33  201.18 KB  256     ?       cba0b0bb-6917-483f-83be-0f44d0aa048d  rack1
+
+5. Load the DB schema [Salt-Master]:
+====================================
+
+# salt 'ccdc1s-0' state.sls cassandra_load_schema saltenv=ns | grep result
+
+                        <result>OK</result>
+                        <result>OK</result>
+
+5.1. Verify the data distribution in the cluster [Salt Master]
+--------------------------------------------------------------
+
+# salt 'ccdc1s-0' cmd.run "runuser -l -s /bin/bash cassandra -c 'nodetool status notifications'"
+
+ccdc1s-0:
+    Datacenter: dc1
+    ===============
+    Status=Up/Down
+    |/ State=Normal/Leaving/Joining/Moving
+    --  Address        Load       Tokens  Owns (effective)  Host ID                               Rack
+    UN  192.168.99.28  114.09 KB  256     33.6%             23f33ed3-73e8-4af6-aaeb-5697992fc9e6  rack1
+    UN  192.168.99.29  199.24 KB  256     33.2%             6903d709-9fa1-4939-8fb3-099a58a7925a  rack1
+    UN  192.168.99.30  199.14 KB  256     32.9%             395375e5-cb2a-4d12-b72d-e5cbc0a11ca6  rack1
+    UN  192.168.99.31  199.68 KB  256     33.8%             a7ce2392-66ef-4df3-9702-59c577c716b2  rack1
+    UN  192.168.99.32  205.13 KB  256     33.9%             8f6a7552-e75f-4cf3-8162-5212a7dfb540  rack1
+    UN  192.168.99.33  210.14 KB  256     32.6%             cba0b0bb-6917-483f-83be-0f44d0aa048d  rack1

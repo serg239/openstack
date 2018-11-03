@@ -5,7 +5,7 @@ How to mark as "deleted" the tasks in the "deleting" state?
 
 The problem
 ===========
-1. The instances in the infinite "deleting" state:
+1. The instances are in the infinite "deleting" state:
 
 # nova list --all-tenants 1
 

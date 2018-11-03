@@ -1,0 +1,220 @@
+The instances in the infinite "deleting" state
+==============================================
+or 
+How to mark as "deleted" the tasks in the "deleting" state?
+
+The problem
+===========
+1. The instances in the infinite "deleting" state:
+
+# nova list --all-tenants 1
+
+| kc-qa2-1               | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.84; ns-internal=192.168.99.184
+| kc-qa2-2               | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.79; ns-internal=192.168.99.181
+| kc-qa3-2               | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.141; ns-internal=192.168.99.211
+| ccr-qa1-0              | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.124; ns-internal=192.168.99.199
+| ccr-qa3-0              | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.137; ns-internal=192.168.99.206
+| ccr-qa3-1              | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.134; ns-internal=192.168.99.208
+| zkc-qa1-1              | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.119; ns-internal=192.168.99.197
+| zkc-qa1-2              | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.117; ns-internal=192.168.99.195
+| zkc-qa2-0              | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.115; ns-internal=192.168.99.190
+| ns-qa3-0               | 18b5102333eb4db4ba9f6e68e4167bf5 | ACTIVE  | deleting   | Running     | production=10.9.62.128; ns-internal=192.168.99.203
+
+2. The salt-minions on the instances are not available: 
+
+zkc-qa1-1:   Minion did not return. [Not connected]
+zkc-qa1-2:   Minion did not return. [Not connected]
+zkc-qa2-0:   Minion did not return. [Not connected]
+kc-qa2-1:    Minion did not return. [Not connected]
+kc-qa2-2:    Minion did not return. [Not connected]
+kc-qa3-2:    Minion did not return. [Not connected]
+ccr-qa1-0:   Minion did not return. [Not connected]
+ccs-qa2-0:   Minion did not return. [Not connected]
+ns-qa3-0:    Minion did not return. [Not connected]
+   
+3. You can not "help" Nova to delete instance:
+
+# nova delete ns-qa3-0
+
+Workaround
+==========
+
+If you delete the object, OpenStack does not delete the records 
+from Nova database, but just modifies the "deleted_at" and "deleted" 
+fields in the tables instead. 
+When OpenStack "deletes" the instance (i.e. marked it as "deleted") 
+it updates the "instances", "instance_info_caches", and "fixed_ips" 
+tables in "nova" database. 
+
+1. Let's connect to the database and check the tables:
+
+[root@openstack-controller ~]# mysql -u root
+MariaDB [(none)]> USE nova;
+MariaDB [nova]> 
+
+Notes:
+The user name and passwords are defined in the configuration files:
+# User name for the MariaDB administrative user.
+CONFIG_MARIADB_USER=root
+# Password for the MariaDB administrative user.
+CONFIG_MARIADB_PW=2040ef6f118e453e
+# Password to use for the Compute service (nova) to access the database.
+CONFIG_NOVA_DB_PW=c1f1838985564847
+
+You can investigate the structure of the tables now:
+
+> SHOW columns FROM instances;
+> SHOW columns FROM instance_info_caches;
+> SHOW columns FROM fixed_ips;
+
+As you can see the "instance_info_caches" table has a Foreign Key constraint to "instances" table:
+CONSTRAINT `instance_info_caches_instance_uuid_fkey` FOREIGN KEY (`instance_uuid`) REFERENCES `instances` (`uuid`)
+and "fixed_ips" table has a similar Foreign Key constraint to "instances" table:
+CONSTRAINT `fixed_ips_instance_uuid_fkey` FOREIGN KEY (`instance_uuid`) REFERENCES `instances` (`uuid`)
+So, we can use these constraints in the WHERE clause later.  
+
+2. Let's define the instances in the broken state ("deleting" but not deleted):
+
+Check the "instances" table
+---------------------------
+SELECT id, 
+       display_name, 
+       uuid, 
+       deleted, 
+       power_state, 
+       vm_state, 
+       task_state, 
+       deleted_at, 
+       updated_at, 
+       terminated_at, 
+       root_device_name, 
+       launched_on 
+  FROM instances 
+ WHERE deleted = 0
+   AND task_state = "deleting"
+ ORDER BY 1;
++------+---------------+--------------------------------------+---------+-------------+----------+------------+------------+---------------------+---------------+------------------+-----------------------------+
+| id   | display_name  | uuid                                 | deleted | power_state | vm_state | task_state | deleted_at | updated_at          | terminated_at | root_device_name | launched_on                 |
++------+---------------+--------------------------------------+---------+-------------+----------+------------+------------+---------------------+---------------+------------------+-----------------------------+
+| 2831 | kc-qa2-2      | 1d8f4bbd-0608-4262-a7bd-f306876f8a72 |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:48:54 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2834 | kc-qa2-1      | ed3d1371-8e89-45a1-9090-dbe7fa72f755 |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:48:54 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2837 | ccs-qa2-0     | 7ee912b5-440b-49e1-8cb3-0c427998e870 |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:48:54 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2841 | zkc-qa2-0     | 32da21a8-f73b-45f7-ac8f-39ee163c5c60 |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:48:54 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2843 | zkc-qa1-2     | 76a56b89-2f60-460c-b9d8-46a90caa17e1 |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:48:58 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2846 | zkc-qa1-1     | 2c35deb7-ba91-4e8e-bec3-fc1ddf81d486 |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:48:58 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2849 | ccr-qa1-0     | 09de1e88-836a-4ed4-b136-b9588d9104ba |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:48:58 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2853 | ns-qa3-0      | bcb4e9d3-ad0e-4c63-a061-4aa7a233f381 |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:49:01 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2856 | ccr-qa3-1     | 82fe70b1-3926-45d1-a717-66e98b3afefc |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:49:01 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2859 | ccr-qa3-0     | 9308f337-466c-4dc9-88a5-effd23699e6c |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:49:01 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2862 | kc-qa3-2      | 06454ab8-8d21-4562-8dd1-846cd165d871 |       0 |           1 | active   | deleting   | NULL       | 2016-05-27 14:49:01 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2866 | ESXi-PowerCLI | f0bd1025-df20-4468-92a2-566bbe5668ab |       0 |           1 | active   | deleting   | NULL       | 2016-05-25 19:11:47 | NULL          | /dev/xvda        | openstack-compute3.cloudsol |
+| 2868 | test          | 189b9cae-5a0e-430a-915e-ad1db34453e1 |       0 |           0 | building | deleting   | NULL       | 2016-05-26 16:03:00 | NULL          | NULL             | openstack-compute3.cloudsol |
+| 2880 | zkc-qa1-1     | 5da2494a-9950-4858-8439-ef87ed9dc570 |       0 |           0 | building | deleting   | NULL       | 2016-05-27 15:40:21 | NULL          | NULL             | openstack-compute3.cloudsol |
+| 2884 | kc-qa1-0      | c181512e-cd75-4eab-bcc0-3e5e45197690 |       0 |           0 | building | deleting   | NULL       | 2016-06-01 17:13:26 | NULL          | NULL             | openstack-compute3.cloudsol |
+| 2919 | kc-qa5-2      | c6652e68-8d11-43b2-ade1-a70ce7e0aeed |       0 |           0 | building | deleting   | NULL       | 2016-06-01 18:34:54 | NULL          | NULL             | openstack-compute3.cloudsol |
++------+---------------+--------------------------------------+---------+-------------+----------+------------+------------+---------------------+---------------+------------------+-----------------------------+
+16 rows in set (0.01 sec)
+
+Check the "instance_info_caches" table
+--------------------------------------
+SELECT id, 
+       instance_uuid, 
+       deleted_at, 
+       updated_at, 
+       deleted 
+  FROM instance_info_caches 
+ WHERE deleted = 0
+   AND instance_uuid IN 
+    (SELECT uuid 
+       FROM instances 
+      WHERE deleted = 0 
+        AND task_state = "deleting"
+    )
+ ORDER BY 1;
++------+--------------------------------------+------------+---------------------+---------+
+| id   | instance_uuid                        | deleted_at | updated_at          | deleted |
++------+--------------------------------------+------------+---------------------+---------+
+| 2831 | 1d8f4bbd-0608-4262-a7bd-f306876f8a72 | NULL       | 2016-05-24 17:36:37 |       0 |
+| 2834 | ed3d1371-8e89-45a1-9090-dbe7fa72f755 | NULL       | 2016-05-24 17:37:38 |       0 |
+| 2837 | 7ee912b5-440b-49e1-8cb3-0c427998e870 | NULL       | 2016-05-24 17:38:38 |       0 |
+| 2841 | 32da21a8-f73b-45f7-ac8f-39ee163c5c60 | NULL       | 2016-05-24 17:39:38 |       0 |
+| 2843 | 76a56b89-2f60-460c-b9d8-46a90caa17e1 | NULL       | 2016-05-24 17:40:40 |       0 |
+| 2846 | 2c35deb7-ba91-4e8e-bec3-fc1ddf81d486 | NULL       | 2016-05-24 17:52:48 |       0 |
+| 2849 | 09de1e88-836a-4ed4-b136-b9588d9104ba | NULL       | 2016-05-24 17:41:40 |       0 |
+| 2853 | bcb4e9d3-ad0e-4c63-a061-4aa7a233f381 | NULL       | 2016-05-24 18:07:07 |       0 |
+| 2856 | 82fe70b1-3926-45d1-a717-66e98b3afefc | NULL       | 2016-05-24 18:08:09 |       0 |
+| 2859 | 9308f337-466c-4dc9-88a5-effd23699e6c | NULL       | 2016-05-24 18:09:09 |       0 |
+| 2862 | 06454ab8-8d21-4562-8dd1-846cd165d871 | NULL       | 2016-05-24 18:10:09 |       0 |
+| 2866 | f0bd1025-df20-4468-92a2-566bbe5668ab | NULL       | 2016-05-25 18:50:33 |       0 |
+| 2868 | 189b9cae-5a0e-430a-915e-ad1db34453e1 | NULL       | NULL                |       0 |
+| 2880 | 5da2494a-9950-4858-8439-ef87ed9dc570 | NULL       | NULL                |       0 |
+| 2884 | c181512e-cd75-4eab-bcc0-3e5e45197690 | NULL       | NULL                |       0 |
+| 2919 | c6652e68-8d11-43b2-ade1-a70ce7e0aeed | NULL       | NULL                |       0 |
++------+--------------------------------------+------------+---------------------+---------+
+16 rows in set (0.00 sec)
+
+Check the "fixed_ips" table
+---------------------------
+SELECT id,
+       instance_uuid,
+       allocated,
+       virtual_interface_id,
+       deleted
+  FROM fixed_ips 
+ WHERE deleted = 0
+   AND instance_uuid IN 
+    (SELECT uuid 
+       FROM instances 
+      WHERE deleted = 0 
+        AND task_state = "deleting"
+     )
+ ORDER BY 1;
+Empty set (0.01 sec)
+
+
+3. We can create the final SQL statements to fix the issue:
+
+Update "instance_info_caches" table
+-----------------------------------
+UPDATE instance_info_caches 
+   SET deleted_at = updated_at, 
+       deleted = id 
+ WHERE deleted = 0
+   AND id IN (2831, 2834, 2837, 2841, 2843, 2846, 2849, 2853, 2856, 2859, 2862, 2866, 2868, 2880, 2884, 2919)
+;
+Query OK, 16 rows affected (0.01 sec)
+Rows matched: 16  Changed: 16  Warnings: 0
+
+Update "fixed_ips" table
+------------------------
+UPDATE fixed_ips 
+   SET instance_id = NULL, 
+       allocated = 0, 
+       virtual_interface_id = NULL 
+ WHERE deleted = 0
+   AND instance_uuid IN 
+     (SELECT uuid 
+        FROM instances 
+       WHERE deleted = 0 
+         AND task_state = "deleting"
+     )
+;
+Query OK, 0 rows affected (0.01 sec)
+
+Update "instances" table
+------------------------
+Mark the rows as deleted (that's a "soft-delete")
+
+UPDATE instances
+   SET deleted_at = updated_at,
+       deleted = id,
+       power_state = 0,
+       vm_state = "deleted",
+       terminated_at = updated_at,
+       root_device_name = NULL,
+       task_state = NULL
+ WHERE deleted = 0
+   AND task_state = "deleting"
+;
+Query OK, 16 rows affected (0.01 sec)
+Rows matched: 16  Changed: 16  Warnings: 0
